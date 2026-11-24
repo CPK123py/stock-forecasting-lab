@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Stockinator</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+        .chart-container {
+            position: relative;
+            height: 400px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding-bottom: 20px;
+        }
+        .chart-wrapper {
+            min-width: 100%;
+            width: max-content;
+            height: 380px;
+        }
+        .chart-container::-webkit-scrollbar {
+            height: 8px;
+        }
+        .chart-container::-webkit-scrollbar-track {
+            background: #1e293b;
+            border-radius: 4px;
+        }
+        .chart-container::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 4px;
+        }
+        .chart-container::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script>
+        if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
+            document.getElementById('root').innerHTML = '<div style="padding: 20px; color: red;">Error: Libraries not loaded.</div>';
+        } else {
+            initApp();
+        }
+        
+        function initApp() {
+            const { useState, useEffect, useRef } = React;
+
+            const API_BASE = 'http://localhost:5000/api';
+
+            function IntegratedTradingDashboard() {
+              const [stockData, setStockData] = useState([]);
+              const [predictions, setPredictions] = useState([]);
+              const [status, setStatus] = useState(null);
+              const [symbol, setSymbol] = useState('ZOMATO.NS');
+              const [showConfig, setShowConfig] = useState(true);
+              const [countdown, setCountdown] = useState(600);
+
+              const intervalRef = useRef(null);
+              const statusIntervalRef = useRef(null);
+              const countdownRef = useRef(null);
+              const chartRef = useRef(null);
+              const chartInstanceRef = useRef(null);
+              const chartContainerRef = useRef(null);
+
+              const fetchStatus = async () => {
+                try {
+                  const response = await fetch(API_BASE + '/status');
+                  const data = await response.json();
+                  setStatus(data);
+                  if (data.is_live && !countdownRef.current) {
+                    startCountdown();
+                  } else if (!data.is_live && countdownRef.current) {
+                    stopCountdown();
+                  }
+                } catch (error) {
+                  console.error('Error fetching status:', error);
+                }
+              };
+
+              const fetchData = async () => {
+                try {
+                  const response = await fetch(API_BASE + '/data');
+                  const result = await response.json();
+                  if (result.data && Array.isArray(result.data)) {
+                    setStockData(result.data);
+                  }
+                } catch (error) {
+                  console.error('Error fetching data:', error);
+                }
+              };
+
+              const fetchPredictions = async () => {
+                try {
+                  const response = await fetch(API_BASE + '/predictions');
+                  const result = await response.json();
+                  if (result.predictions && Array.isArray(result.predictions)) {
+                    setPredictions(result.predictions);
+                  }
+                } catch (error) {
+                  console.error('Error fetching predictions:', error);
+                }
+              };
+
+              const startTrading = async () => {
+                try {
+                  const response = await fetch(API_BASE + '/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: symbol })
+                  });
+                  if (response.ok) {
+                    setShowConfig(false);
+                    intervalRef.current = setInterval(() => {
+                      fetchData();
+                      fetchPredictions();
+                    }, 5000);
+                    statusIntervalRef.current = setInterval(fetchStatus, 2000);
+                    startCountdown();
+                  }
+                } catch (error) {
+                  console.error('Error starting trading:', error);
+                  alert('Error starting trading: ' + error.message);
+                }
+              };
+
+              const stopTrading = async () => {
+                try {
+                  await fetch(API_BASE + '/stop', { method: 'POST' });
+                  if (intervalRef.current) clearInterval(intervalRef.current);
+                  if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
+                  stopCountdown();
+                  setShowConfig(true);
+                } catch (error) {
+                  console.error('Error stopping trading:', error);
+                }
+              };
+
+              const startCountdown = () => {
+                setCountdown(600);
+                countdownRef.current = setInterval(() => {
+                  setCountdown(prev => (prev <= 1 ? 600 : prev - 1));
+                }, 1000);
+              };
+
+              const stopCountdown = () => {
+                if (countdownRef.current) {
+                  clearInterval(countdownRef.current);
+                  countdownRef.current = null;
+                }
+              };
+
+              const triggerTraining = async () => {
+                try {
+                  await fetch(API_BASE + '/train', { method: 'POST' });
+                  alert('Training started!');
+                } catch (error) {
+                  console.error('Error triggering training:', error);
+                }
+              };
+
+              useEffect(() => {
+                fetchStatus();
+                const initialInterval = setInterval(fetchStatus, 5000);
+                return () => {
+                  clearInterval(initialInterval);
+                  if (intervalRef.current) clearInterval(intervalRef.current);
+                  if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
+                  if (countdownRef.current) clearInterval(countdownRef.current);
+                  if (chartInstanceRef.current) {
+                    chartInstanceRef.current.destroy();
+                  }
+                };
+              }, []);
+
+              useEffect(() => {
+                if (!showConfig && chartRef.current && typeof Chart !== 'undefined') {
+                  updateChart();
+                }
+              }, [stockData, predictions, showConfig]);
+
+              const updateChart = () => {
+                if (!chartRef.current) return;
+
+                const ctx = chartRef.current.getContext('2d');
+                
+                const labels = [];
+                const actualData = [];
+                const predictedData = [];
+
+                if (Array.isArray(stockData)) {
+                  stockData.forEach(d => {
+                    labels.push(d.timestamp);
+                    actualData.push(d.close);
+                    predictedData.push(null);
+                  });
+                }
+
+                if (Array.isArray(predictions) && predictions.length > 0) {
+                  predictions.forEach(p => {
+                    labels.push(p.timestamp);
+                    actualData.push(null);
+                    predictedData.push(p.price);
+                  });
+                }
+
+                // Calculate dynamic width based on data points
+                const minPointsVisible = 30;
+                const pointWidth = 20;
+                const calculatedWidth = Math.max(labels.length * pointWidth, minPointsVisible * pointWidth);
+                
+                if (chartRef.current.parentElement) {
+                  chartRef.current.parentElement.style.width = calculatedWidth + 'px';
+                }
+
+                if (chartInstanceRef.current) {
+                  // Update existing chart data smoothly
+                  chartInstanceRef.current.data.labels = labels;
+                  chartInstanceRef.current.data.datasets[0].data = actualData;
+                  chartInstanceRef.current.data.datasets[1].data = predictedData;
+                  chartInstanceRef.current.update('none'); // Update without animation
+                  
+                  // Auto-scroll to the right (latest data)
+                  if (chartContainerRef.current) {
+                    chartContainerRef.current.scrollLeft = chartContainerRef.current.scrollWidth;
+                  }
+                } else {
+                  // Create new chart
+                  chartInstanceRef.current = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                      labels: labels,
+                      datasets: [
+                        {
+                          label: 'Actual Price',
+                          data: actualData,
+                          borderColor: '#06b6d4',
+                          backgroundColor: 'rgba(6, 182, 212, 0.1)',
+                          borderWidth: 3,
+                          fill: true,
+                          tension: 0.4,
+                          pointRadius: 2,
+                          pointHoverRadius: 4
+                        },
+                        {
+                          label: 'Predicted Price',
+                          data: predictedData,
+                          borderColor: '#a855f7',
+                          backgroundColor: 'rgba(168, 85, 247, 0.1)',
+                          borderWidth: 3,
+                          borderDash: [8, 4],
+                          fill: true,
+                          tension: 0.4,
+                          pointRadius: 2,
+                          pointHoverRadius: 4
+                        }
+                      ]
+                    },
+                    options: {
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      animation: false,
+                      plugins: {
+                        legend: {
+                          labels: {
+                            color: '#94a3b8',
+                            font: { size: 12 }
+                          }
+                        },
+                        tooltip: {
+                          backgroundColor: '#1e293b',
+                          titleColor: '#cbd5e1',
+                          bodyColor: '#cbd5e1',
+                          borderColor: '#475569',
+                          borderWidth: 1
+                        }
+                      },
+                      scales: {
+                        x: {
+                          ticks: { 
+                            color: '#94a3b8',
+                            maxRotation: 45,
+                            minRotation: 45,
+                            autoSkip: true,
+                            maxTicksLimit: 20
+                          },
+                          grid: { 
+                            color: 'rgba(51, 65, 85, 0.3)',
+                            drawBorder: false
+                          }
+                        },
+                        y: {
+                          ticks: { color: '#94a3b8' },
+                          grid: { 
+                            color: 'rgba(51, 65, 85, 0.3)',
+                            drawBorder: false
+                          }
+                        }
+                      }
+                    }
+                  });
+                }
+              };
+
+              const formatCountdown = (seconds) => {
+                const mins = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                return mins + ':' + secs.toString().padStart(2, '0');
+              };
+
+              const currentPrice = Array.isArray(stockData) && stockData.length > 0 ? stockData[stockData.length - 1].close : null;
+              const dayOpen = Array.isArray(stockData) && stockData.length > 0 && stockData[0].day_open ? stockData[0].day_open : currentPrice;
+              const priceChange = currentPrice && dayOpen ? ((currentPrice - dayOpen) / dayOpen) * 100 : 0;
+
+              return React.createElement('div', { 
+                className: 'min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-6' 
+              },
+                React.createElement('div', { className: 'max-w-7xl mx-auto' },
+                  React.createElement('h1', { 
+                    className: 'text-4xl font-bold mb-4 bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-600 bg-clip-text text-transparent' 
+                  }, 'Real-Time Trading Intelligence'),
+                  
+                  React.createElement('p', { className: 'text-slate-400 mb-6' }, 'RLSA-Powered Intraday Predictions'),
+                  
+                  showConfig && React.createElement('div', { 
+                    className: 'bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-6 border border-slate-700 shadow-lg mb-6' 
+                  },
+                    React.createElement('h2', { className: 'text-xl font-semibold mb-4' }, 'Configuration'),
+                    React.createElement('div', { className: 'space-y-4' },
+                      React.createElement('div', null,
+                        React.createElement('label', { className: 'block text-sm text-slate-400 mb-2' }, 'Stock Symbol'),
+                        React.createElement('input', {
+                          type: 'text',
+                          value: symbol,
+                          onChange: (e) => setSymbol(e.target.value),
+                          className: 'w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-cyan-500',
+                          placeholder: 'e.g., ZOMATO.NS'
+                        })
+                      ),
+                      React.createElement('button', {
+                        onClick: startTrading,
+                        className: 'w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white font-semibold py-3 rounded-lg transition'
+                      }, 'Start Live Trading')
+                    )
+                  ),
+                  
+                  status && !showConfig && React.createElement('div', { className: 'grid grid-cols-1 md:grid-cols-4 gap-4 mb-6' },
+                    React.createElement('div', { className: 'bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-4 border border-slate-700' },
+                      React.createElement('div', { className: 'text-slate-400 text-sm mb-1' }, 'Status'),
+                      React.createElement('div', { 
+                        className: 'text-xl font-bold ' + (status.is_live ? 'text-green-400' : 'text-red-400') 
+                      }, status.is_live ? 'LIVE' : 'STOPPED')
+                    ),
+                    React.createElement('div', { className: 'bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-4 border border-slate-700' },
+                      React.createElement('div', { className: 'text-slate-400 text-sm mb-1' }, 'Current Price'),
+                      React.createElement('div', { className: 'text-xl font-bold text-cyan-400' },
+                        currentPrice ? '₹' + currentPrice.toFixed(2) : '-'
+                      ),
+                      priceChange !== 0 && React.createElement('div', { 
+                        className: 'text-sm ' + (priceChange >= 0 ? 'text-green-400' : 'text-red-400') 
+                      }, (priceChange >= 0 ? '+' : '') + priceChange.toFixed(2) + '%')
+                    ),
+                    React.createElement('div', { className: 'bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-4 border border-slate-700' },
+                      React.createElement('div', { className: 'text-slate-400 text-sm mb-1' }, 'Data Points'),
+                      React.createElement('div', { className: 'text-xl font-bold text-purple-400' }, status.data_points)
+                    ),
+                    React.createElement('div', { className: 'bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-4 border border-slate-700' },
+                      React.createElement('div', { className: 'text-slate-400 text-sm mb-1' }, 'Next Training'),
+                      React.createElement('div', { className: 'text-xl font-bold text-blue-400' }, formatCountdown(countdown))
+                    )
+                  ),
+                  
+                  !showConfig && React.createElement('div', { className: 'flex gap-4 mb-6' },
+                    React.createElement('button', {
+                      onClick: stopTrading,
+                      className: 'bg-red-600 hover:bg-red-700 text-white font-semibold px-6 py-2 rounded-lg transition'
+                    }, 'Stop Trading'),
+                    React.createElement('button', {
+                      onClick: triggerTraining,
+                      className: 'bg-purple-600 hover:bg-purple-700 text-white font-semibold px-6 py-2 rounded-lg transition'
+                    }, 'Train Now')
+                  ),
+                  
+                  !showConfig && React.createElement('div', { 
+                    className: 'bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-6 border border-slate-700 shadow-lg mb-6' 
+                  },
+                    React.createElement('h2', { className: 'text-xl font-semibold mb-4' }, 'Live Chart'),
+                    React.createElement('div', { className: 'text-sm text-slate-400 mb-2' }, 'Scroll horizontally to view historical data →'),
+                    React.createElement('div', { 
+                      ref: chartContainerRef,
+                      className: 'chart-container'
+                    },
+                      React.createElement('div', { className: 'chart-wrapper' },
+                        React.createElement('canvas', { ref: chartRef })
+                      )
+                    )
+                  ),
+                  
+                  !showConfig && Array.isArray(predictions) && predictions.length > 0 && React.createElement('div', { 
+                    className: 'bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-6 border border-slate-700 shadow-lg' 
+                  },
+                    React.createElement('h2', { className: 'text-xl font-semibold mb-4' }, 'Predictions (Next 10 Minutes)'),
+                    React.createElement('div', { className: 'overflow-x-auto' },
+                      React.createElement('table', { className: 'w-full' },
+                        React.createElement('thead', null,
+                          React.createElement('tr', { className: 'border-b border-slate-700' },
+                            React.createElement('th', { className: 'text-left py-2 px-4 text-slate-400' }, 'Time'),
+                            React.createElement('th', { className: 'text-right py-2 px-4 text-slate-400' }, 'Price'),
+                            React.createElement('th', { className: 'text-right py-2 px-4 text-slate-400' }, 'Change %'),
+                            React.createElement('th', { className: 'text-right py-2 px-4 text-slate-400' }, 'Confidence')
+                          )
+                        ),
+                        React.createElement('tbody', null,
+                          predictions.map((pred, idx) =>
+                            React.createElement('tr', { key: idx, className: 'border-b border-slate-700 hover:bg-slate-800' },
+                              React.createElement('td', { className: 'py-2 px-4' }, pred.timestamp),
+                              React.createElement('td', { className: 'text-right py-2 px-4' }, '₹' + pred.price.toFixed(2)),
+                              React.createElement('td', { 
+                                className: 'text-right py-2 px-4 ' + (pred.change_pct >= 0 ? 'text-green-400' : 'text-red-400') 
+                              }, (pred.change_pct >= 0 ? '+' : '') + pred.change_pct.toFixed(2) + '%'),
+                              React.createElement('td', { className: 'text-right py-2 px-4 text-blue-400' }, 
+                                (pred.confidence * 100).toFixed(1) + '%'
+                              )
+                            )
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+              );
+            }
+
+            const root = ReactDOM.createRoot(document.getElementById('root'));
+            root.render(React.createElement(IntegratedTradingDashboard));
+        }
+    </script>
+</body>
+</html>
